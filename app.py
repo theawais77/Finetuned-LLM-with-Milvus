@@ -9,6 +9,7 @@ from services.binance_service import BinanceService
 from services.milvus_service import MilvusService
 from services.llm_service import LLMService
 from services.base import logging
+from services.market_news_job import MarketNewsCollector
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +23,7 @@ class TradingAssistant:
         self.binance_service = BinanceService()
         self.milvus_service = MilvusService()
         self.llm_service = LLMService()
+        self.news_collector = None
         self.scheduler = None
         self._initialization_lock = threading.Lock()
         self._initialized = False
@@ -44,6 +46,9 @@ class TradingAssistant:
                 self.milvus_service.connect()
                 dim = self.embedder.get_sentence_embedding_dimension()
                 self.collection = self.milvus_service.get_or_create_collection(dim)
+
+                logger.info("Initializing MarketNewsCollector...")
+                self.news_collector = MarketNewsCollector()
                 
                 # Warm up LLM
                 logger.info("Warming up LLM...")
@@ -75,11 +80,22 @@ class TradingAssistant:
             replace_existing=True,
             max_instances=1
         )
+
+        self.scheduler.add_job(
+            func=self._market_news_job,
+            trigger="interval",
+            minutes=30,  # Run every 30 minutes (adjust as needed)
+            id="market_news_collection",
+            replace_existing=True,
+            max_instances=1
+        )
+
         self.scheduler.start()
         logger.info("Market data scheduler started")
         
         # Run initial job
         threading.Thread(target=self._market_data_job, daemon=True).start()
+        threading.Thread(target=self._market_news_job, daemon=True).start()
     
     def _market_data_job(self):
         """Collect and store market data"""
@@ -108,7 +124,36 @@ class TradingAssistant:
                 
         except Exception as e:
             logger.error(f"Market data job failed: {e}")
-    
+        
+    def _market_news_job(self):
+        try:
+            logger.info("Starting market news collection job...")
+            
+            news_entries = self.news_collector.fetch_crypto_news()
+            
+            if not news_entries:
+                logger.warning("No news data collected")
+                return
+            
+            # Check for new entries
+            new_entries = self.milvus_service.check_existing_documents(news_entries)
+            
+            if new_entries:
+                # Generate embeddings
+                embeddings = self.embedder.encode(new_entries)
+                
+                # Store in Milvus
+                self.milvus_service.insert_documents(new_entries, embeddings.tolist())
+                logger.info(f"Stored {len(new_entries)} new news entries")
+            else:
+                logger.info("No new news data to store")
+                
+            logger.info("Market news collection job completed")
+                
+        except Exception as e:
+            logger.error(f"Market news job failed: {e}")
+
+
     def query(self, question: str) -> dict:
         """Process user query"""
         if not self._initialized:
@@ -313,7 +358,7 @@ if __name__ == "__main__":
             host="0.0.0.0",
             port=5000,
             debug=True,
-            use_reloader=False,  # Disable reloader to prevent duplicate schedulers
+            use_reloader=False, 
             threaded=True
         )
         

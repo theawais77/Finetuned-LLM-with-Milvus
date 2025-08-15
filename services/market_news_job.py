@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
+
 class MarketNewsCollector:
     def __init__(self):
         self.milvus_service = MilvusService()
@@ -28,7 +29,7 @@ class MarketNewsCollector:
                 "language": "en",
                 "sortBy": "publishedAt",
                 "pageSize": 25,
-                "apiKey": self.news_api_key
+                "apiKey": self.news_api_key,
             }
             resp = requests.get(url, params=params, timeout=10)
             resp.raise_for_status()
@@ -39,7 +40,9 @@ class MarketNewsCollector:
                 published = art.get("publishedAt", "").strip()
                 title = art.get("title", "").strip()
                 source = art.get("source", {}).get("name", "")
-                desc = art.get("description", "").strip() if art.get("description") else ""
+                desc = (
+                    art.get("description", "").strip() if art.get("description") else ""
+                )
                 link = art.get("url", "")
 
                 # Final formatted entry for storage
@@ -54,22 +57,29 @@ class MarketNewsCollector:
             logger.error(f"Error fetching crypto news: {e}")
             return []
 
+
     def run(self):
         logger.info("Starting crypto news collection job...")
 
-        # Get news articles
+        self.milvus_service.connect()
+        dim = self.embedder.get_sentence_embedding_dimension()
+        self.milvus_service.get_or_create_collection(dim)
+
         news_entries = self.fetch_crypto_news()
         if not news_entries:
             logger.warning("No news fetched this run.")
             return
 
-        # Deduplicate
         new_entries = self.milvus_service.check_existing_documents(news_entries)
+        logger.info(f"Fetched {len(news_entries)} total, {len(new_entries)} are new.")
+
         if not new_entries:
             logger.info("No new news to store.")
             return
 
-        # Embed and store
         embeddings = self.embedder.encode(new_entries)
         self.milvus_service.insert_documents(new_entries, embeddings.tolist())
         logger.info(f"Stored {len(new_entries)} new news entries in vector DB")
+        logger.info(
+            f"Collection now has {self.milvus_service.collection.num_entities} total entries"
+        )

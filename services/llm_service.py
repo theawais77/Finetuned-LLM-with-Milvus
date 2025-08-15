@@ -119,6 +119,7 @@ Instructions:
 - Use only the provided data - do not invent facts
 - If data is insufficient, say so clearly
 - Format your response between <Answer> tags
+- Provide market news if needed by seeing the data you have
 
 <Answer>
 """
